@@ -26,7 +26,7 @@ SET GLOBAL quack_target_batch_bytes = 65536;
 
 # many fetches are sent when the scan starts, so the first one fails before the scan sent them all
 statement ok
-SET quack_fetch_read_ahead = 64;
+SET quack_fetch_read_ahead = 512;
 
 loop attempt 0 5
 
