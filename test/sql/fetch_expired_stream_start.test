@@ -10,6 +10,7 @@ CREATE TABLE big AS SELECT range AS i FROM range(300000);
 statement ok quack_db:quack_server_con
 SET GLOBAL quack_enable_reconnects = true;
 
+# the failure only shows when the client also has the server attached
 statement ok
 CREATE SECRET (TYPE quack, TOKEN 'asdf');
 
