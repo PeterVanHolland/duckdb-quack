@@ -26,8 +26,8 @@ unique_ptr<CreateInfo> ParseCreateTable(const string &sql) {
 	return std::move(create.info);
 }
 
-//! JSON is bound without the json extension, which the client may not have loaded
-static LogicalType BindJSONTypes(const LogicalType &type) {
+//! Without the json extension, JSON is bound as the server stores it
+static LogicalType BindJSONTypes(ClientContext &context, const LogicalType &type) {
 	if (!type.IsUnbound()) {
 		return type;
 	}
@@ -38,17 +38,19 @@ static LogicalType BindJSONTypes(const LogicalType &type) {
 		// types like GEOMETRY with a coordinate system need the client context
 		return type;
 	}
-	return TypeVisitor::VisitReplace(default_bound, [](const LogicalType &child) {
+	auto is_json = [](const LogicalType &child) {
 		if (child.id() != LogicalTypeId::UNBOUND) {
-			return child;
+			return false;
 		}
 		auto &type_expr = UnboundType::GetTypeExpression(child)->Cast<TypeExpression>();
-		if (type_expr.GetChildren().empty() &&
-		    StringUtil::CIEquals(type_expr.GetTypeName().GetIdentifierName(), "json")) {
-			return LogicalType::JSON();
-		}
-		return child;
-	});
+		return type_expr.GetChildren().empty() &&
+		       StringUtil::CIEquals(type_expr.GetTypeName().GetIdentifierName(), "json");
+	};
+	if (!TypeVisitor::Contains(default_bound, is_json) || Catalog::TryAutoLoad(context, "json")) {
+		return type;
+	}
+	return TypeVisitor::VisitReplace(
+	    default_bound, [&](const LogicalType &child) { return is_json(child) ? LogicalType::JSON() : child; });
 }
 
 QuackTableSet::QuackTableSet(ClientContext &context, QuackSchemaCatalogEntry &parent,
@@ -82,7 +84,7 @@ QuackTableSet::QuackTableSet(ClientContext &context, QuackSchemaCatalogEntry &pa
 			table_info.constraints = std::move(constraints);
 			for (idx_t col_idx = 0; col_idx < table_info.columns.LogicalColumnCount(); col_idx++) {
 				auto &column = table_info.columns.GetColumnMutable(LogicalIndex(col_idx));
-				column.SetType(BindJSONTypes(column.Type()));
+				column.SetType(BindJSONTypes(context, column.Type()));
 			}
 
 			// Bind to resolve the types. SKIP_BINDING leaves the column DEFAULT expressions unbound:
