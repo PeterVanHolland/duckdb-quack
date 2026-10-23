@@ -1,0 +1,60 @@
+# name: test/sql/attach_json_column.test
+# description: ATTACH binds remote JSON columns while the client has not loaded the json extension
+# group: [sql]
+
+include test/template/quack_setup.test_template
+
+statement ok quack_db:quack_server_con
+load json
+
+statement ok quack_db:quack_server_con
+create table j (id INT, j JSON, s STRUCT(x JSON), l JSON[])
+
+statement ok quack_db:quack_server_con
+insert into j values (1, '{"a": 1}', {'x': '[2]'}, ['"hello"', 'null'])
+
+statement ok
+set autoload_known_extensions = false
+
+statement ok
+attach {server} as rpc (token 'asdf')
+
+query III
+select typeof(j), typeof(s), typeof(l) from rpc.j
+----
+JSON	STRUCT(x JSON)	JSON[]
+
+query IIII
+select id, j, s.x, l[1] from rpc.j
+----
+1	{"a": 1}	[2]	"hello"
+
+query I
+select loaded from duckdb_extensions() where extension_name = 'json'
+----
+false
+
+statement ok
+detach rpc
+
+# with autoloading the client loads json and binds JSON through its catalog
+statement ok
+set autoload_known_extensions = true
+
+statement ok
+attach {server} as rpc (token 'asdf')
+
+query I
+select loaded from duckdb_extensions() where extension_name = 'json'
+----
+true
+
+query IIII
+select id, j, s.x, l[1] from rpc.j
+----
+1	{"a": 1}	[2]	"hello"
+
+statement ok
+detach rpc
+
+include test/template/quack_teardown.test_template
