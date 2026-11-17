@@ -1,0 +1,57 @@
+# name: test/sql/fetch_expired_stream_start.test
+# description: a scan whose first fetches fail while it is still sending them fails like a cancelled query
+# group: [sql]
+
+include test/template/quack_setup.test_template
+
+statement ok quack_db:quack_server_con
+CREATE TABLE big AS SELECT range AS i FROM range(300000);
+
+statement ok quack_db:quack_server_con
+SET GLOBAL quack_enable_reconnects = true;
+
+# the failure only shows when the client also has the server attached
+statement ok
+CREATE SECRET (TYPE quack, TOKEN 'asdf');
+
+statement ok
+ATTACH {server} AS remote;
+
+statement ok quack_db:quack_server_con
+SET GLOBAL quack_result_ttl = 1;
+
+# small batches, so the stream does not fit in the batch that PREPARE inlines
+statement ok quack_db:quack_server_con
+SET GLOBAL quack_target_batch_bytes = 65536;
+
+# many fetches are sent when the scan starts, so the first one fails before the scan sent them all
+statement ok
+SET quack_fetch_read_ahead = 512;
+
+loop attempt 0 5
+
+statement ok
+PREPARE p AS SELECT sum(i) FROM quack_query({server}, 'FROM big', token=>'asdf');
+
+sleep 2 seconds
+
+statement error
+EXECUTE p;
+----
+Query was interrupted
+
+statement ok
+DEALLOCATE p;
+
+endloop
+
+statement ok quack_db:quack_server_con
+RESET GLOBAL quack_target_batch_bytes;
+
+statement ok quack_db:quack_server_con
+RESET GLOBAL quack_result_ttl;
+
+statement ok
+DETACH remote;
+
+include test/template/quack_teardown.test_template

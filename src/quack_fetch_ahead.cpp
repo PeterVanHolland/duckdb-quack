@@ -148,7 +148,13 @@ QuackFetcher::QuackFetcher(ClientContext &context, QuackClientConnection &connec
 	for (idx_t i = 0; i < depth; i++) {
 		idle_clients.push_back(connection.GetClient(context));
 	}
-	TopUp(context);
+	try {
+		TopUp(context);
+	} catch (...) {
+		// the destructor does not run when the constructor throws, and the fetches sent so far use this fetcher
+		StopAndDrain();
+		throw;
+	}
 }
 
 QuackFetcher::~QuackFetcher() {
