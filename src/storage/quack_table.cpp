@@ -3,6 +3,8 @@
 #include "storage/quack_table.hpp"
 #include "quack_scan.hpp"
 #include "duckdb/common/error_data.hpp"
+#include "duckdb/common/type_visitor.hpp"
+#include "duckdb/parser/expression/type_expression.hpp"
 #include "duckdb/parser/parser.hpp"
 #include "duckdb/parser/statement/create_statement.hpp"
 #include "duckdb/parser/parsed_data/alter_info.hpp"
@@ -22,6 +24,33 @@ unique_ptr<CreateInfo> ParseCreateTable(const string &sql) {
 	}
 	auto &create = parser.statements[0]->Cast<CreateStatement>();
 	return std::move(create.info);
+}
+
+//! Without the json extension, JSON is bound as the server stores it
+static LogicalType BindJSONTypes(ClientContext &context, const LogicalType &type) {
+	if (!type.IsUnbound()) {
+		return type;
+	}
+	LogicalType default_bound;
+	try {
+		default_bound = UnboundType::TryDefaultBind(type);
+	} catch (std::exception &) {
+		// types like GEOMETRY with a coordinate system need the client context
+		return type;
+	}
+	auto is_json = [](const LogicalType &child) {
+		if (child.id() != LogicalTypeId::UNBOUND) {
+			return false;
+		}
+		auto &type_expr = UnboundType::GetTypeExpression(child)->Cast<TypeExpression>();
+		return type_expr.GetChildren().empty() &&
+		       StringUtil::CIEquals(type_expr.GetTypeName().GetIdentifierName(), "json");
+	};
+	if (!TypeVisitor::Contains(default_bound, is_json) || Catalog::TryAutoLoad(context, "json")) {
+		return type;
+	}
+	return TypeVisitor::VisitReplace(
+	    default_bound, [&](const LogicalType &child) { return is_json(child) ? LogicalType::JSON() : child; });
 }
 
 QuackTableSet::QuackTableSet(ClientContext &context, QuackSchemaCatalogEntry &parent,
@@ -53,6 +82,10 @@ QuackTableSet::QuackTableSet(ClientContext &context, QuackSchemaCatalogEntry &pa
 				}
 			}
 			table_info.constraints = std::move(constraints);
+			for (idx_t col_idx = 0; col_idx < table_info.columns.LogicalColumnCount(); col_idx++) {
+				auto &column = table_info.columns.GetColumnMutable(LogicalIndex(col_idx));
+				column.SetType(BindJSONTypes(context, column.Type()));
+			}
 
 			// Bind to resolve the types. SKIP_BINDING leaves the column DEFAULT expressions unbound:
 			// binding them here would resolve functions through the catalog we are still constructing,
